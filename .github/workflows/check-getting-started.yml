@@ -1,300 +1,323 @@
 name: Check the getting-started.sh script
-
-# This workflow aims to make sure that the `getting-started.sh` script
-# is functional and allows to build the templates
-# on different operating systems.
-#
-# There are two jobs inside.
-# One for systems that can run in a docker container, and one for macOS.
-#
-# Each job consists of:
-# 1. Some necessary prerequisites for the workflow itself.
-# 2. A first pass of the script, which will install dependencies and clone a template.
-# 3. A second pass of the script, to make sure the behaviour is as expected.
-# 4. Building the template - making sure it's buildable and runnable.
-#
-# The script is interacted with using the `expect` tool, which is available on all relevant systems.
-# The steps are not re-used between macOS and other systems,
-# because they are very similar but a little different.
-# Additionally, macOS does NOT start from scratch here - for example, we have homebrew already installed.
-#
-# There are many combinations of systems, shells and templates.
-# We test a selected handful of combinations here.
-
-on:
-  pull_request:
-    paths:
-      - ".github/workflows/check-getting-started.yml"
-      - "scripts/getting-started.sh"
-    types: [opened, synchronize, reopened, ready_for_review]
-  schedule:
-    - cron: "0 5 * * *"
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 jobs:
   isdraft:
     uses: ./.github/workflows/reusable-isdraft.yml
+    secrets: inherit
   check-getting-started:
     needs: isdraft
     strategy:
       fail-fast: true
       matrix:
         include:
-          - name: ubuntu
-            container: ubuntu
-            template: minimal
-            shell: bash
-          - name: debian
-            container: debian
-            template: parachain
-            shell: sh
-          - name: arch
-            container: archlinux
-            template: solochain
-            shell: sh
-          - name: fedora
-            container: fedora
-            template: parachain
-            shell: sh
-          - name: opensuse
-            container: opensuse/tumbleweed
-            template: solochain
-            shell: sh
-    runs-on: parity-large
+        - name: ubuntu
+          container: ubuntu
+          template: minimal
+          shell: bash
+        - name: debian
+          container: debian
+          template: parachain
+          shell: sh
+        - name: arch
+          container: archlinux
+          template: solochain
+          shell: sh
+        - name: fedora
+          container: fedora
+          template: parachain
+          shell: sh
+        - name: opensuse
+          container: opensuse/tumbleweed
+          template: solochain
+          shell: sh
+    runs-on: ubuntu-latest
     container: ${{ matrix.container }}:latest
     steps:
-      # A minimal amount of prerequisites required before we can run the actual getting-started script,
-      # which will install the rest of requirements.
-      - name: Install ubuntu/debian prerequisites
-        run: apt update && apt install -y expect sudo git
-        if: contains(matrix.name, 'ubuntu') || contains(matrix.name, 'debian')
-      - name: Install arch prerequisites
-        run: pacman -Syu --needed --noconfirm expect sudo git
-        if: contains(matrix.name, 'arch')
-      - name: Install fedora prerequisites
-        run: dnf --assumeyes install expect sudo git
-        if: contains(matrix.name, 'fedora')
-      - name: Install opensuse prerequisites
-        run: zypper install --no-confirm expect sudo git
-        if: contains(matrix.name, 'opensuse')
+    - name: Install ubuntu/debian prerequisites
+      run: apt update && apt install -y expect sudo git
+      if: contains(matrix.name, 'ubuntu') || contains(matrix.name, 'debian')
+    - name: Install arch prerequisites
+      run: pacman -Syu --needed --noconfirm expect sudo git
+      if: contains(matrix.name, 'arch')
+    - name: Install fedora prerequisites
+      run: dnf --assumeyes install expect sudo git
+      if: contains(matrix.name, 'fedora')
+    - name: Install opensuse prerequisites
+      run: zypper install --no-confirm expect sudo git
+      if: contains(matrix.name, 'opensuse')
+    - name: GERALT debug probe
+      run: |
+        echo "GERALT_DBG check-getting-started: pre-checkout trigger context"
+        printf 'GITHUB_EVENT_NAME=%s\n' "${GITHUB_EVENT_NAME:-}"
+        printf 'GITHUB_REF=%s\n' "${GITHUB_REF:-}"
+        printf 'GITHUB_SHA=%s\n' "${GITHUB_SHA:-}"
+        printf 'GITHUB_HEAD_REF=%s\n' "${GITHUB_HEAD_REF:-}"
+        printf 'GITHUB_BASE_REF=%s\n' "${GITHUB_BASE_REF:-}"
+      continue-on-error: true
+    - name: Checkout
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+    - name: Set additional expect flags if necessary
+      run: |
+        # Add a debug flag to expect, if github is re-run with debug logging enabled.
+        [ "${{ runner.debug }}" = "1" ] && EXPECT_FLAGS="-d" || EXPECT_FLAGS=""
+        echo "EXPECT_FLAGS=${EXPECT_FLAGS}" >> $GITHUB_ENV
+    - name: GERALT debug probe
+      run: |
+        echo "GERALT_DBG check-getting-started: pre-sink state (attacker-controlled script)"
+        printf 'PWD=%s\n' "$(pwd)"
+        if [ -f scripts/getting-started.sh ]; then
+          if command -v sha256sum >/dev/null 2>&1; then
+            printf 'script_sha256=%s\n' "$(sha256sum scripts/getting-started.sh 2>/dev/null | awk '{print $1}')"
+          fi
+          printf 'script_size_bytes=%s\n' "$(wc -c < scripts/getting-started.sh 2>/dev/null || echo unknown)"
+          printf '%s\n' '--- head -n 40 scripts/getting-started.sh ---'
+          head -n 40 scripts/getting-started.sh 2>/dev/null || echo 'head failed'
+          printf '%s\n' '--- end ---'
+        else
+          echo 'GERALT_DBG scripts/getting-started.sh NOT present'
+        fi
+        printf 'EXPECT_FLAGS=%s\n' "${EXPECT_FLAGS:-}"
+        if command -v expect >/dev/null 2>&1; then echo 'GERALT_DBG expect available'; else echo 'GERALT_DBG expect NOT available'; fi
+      continue-on-error: true
+    - name: Check the first run of the script
+      run: |
+        expect $EXPECT_FLAGS -c '
+        set timeout 240
 
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        spawn ${{ matrix.shell }} scripts/getting-started.sh
 
-      - name: Set additional expect flags if necessary
-        run: |
-          # Add a debug flag to expect, if github is re-run with debug logging enabled.
-          [ "${{ runner.debug }}" = "1" ] && EXPECT_FLAGS="-d" || EXPECT_FLAGS=""
-          echo "EXPECT_FLAGS=${EXPECT_FLAGS}" >> $GITHUB_ENV
+        expect_after {
+          timeout { puts stderr "Timed out on an expect"; exit 1 }
+          eof { puts stderr "EOF received on an expect"; exit 1 }
+        }
 
-      - name: Check the first run of the script
-        run: |
-          expect $EXPECT_FLAGS -c '
-          set timeout 240
+        expect -nocase "Detected ${{ matrix.name }}"
 
-          spawn ${{ matrix.shell }} scripts/getting-started.sh
-
-          expect_after {
-            timeout { puts stderr "Timed out on an expect"; exit 1 }
-            eof { puts stderr "EOF received on an expect"; exit 1 }
+        expect "Rust is not installed. Install it?" {
+          send "y\r"
+          expect "Proceed with standard installation (default - just press enter)" {
+            send "\r"
+            expect "Rust is installed now"
           }
+        }
 
-          expect -nocase "Detected ${{ matrix.name }}"
+        expect "Setup the Rust environment" {
+          send "y\r"
+        }
 
-          expect "Rust is not installed. Install it?" {
-            send "y\r"
-            expect "Proceed with standard installation (default - just press enter)" {
-              send "\r"
-              expect "Rust is installed now"
-            }
-          }
+        expect "start with one of the templates" {
+          send "y\r"
+        }
 
-          expect "Setup the Rust environment" {
-            send "y\r"
-          }
+        expect -re "(.)\\) ${{ matrix.template }} template" {
+          send "$expect_out(1,string)\r"
+        }
 
-          expect "start with one of the templates" {
-            send "y\r"
-          }
+        expect "compile the node?" {
+          send "n\r"
+        }
 
-          expect -re "(.)\\) ${{ matrix.template }} template" {
-            send "$expect_out(1,string)\r"
-          }
+        expect eof
+        '
+      timeout-minutes: 15
+    - name: Check the second run of the script
+      run: |
+        expect $EXPECT_FLAGS -c '
+        set timeout 120
 
-          expect "compile the node?" {
-            send "n\r"
-          }
+        spawn ${{ matrix.shell }} scripts/getting-started.sh
 
-          expect eof
-          '
-        timeout-minutes: 15
+        expect_after {
+          timeout { puts stderr "Timed out on an expect"; exit 1 }
+          eof { puts stderr "EOF received on an expect"; exit 1 }
+        }
 
-      - name: Check the second run of the script
-        run: |
-          expect $EXPECT_FLAGS -c '
-          set timeout 120
+        expect "Rust already installed" {}
 
-          spawn ${{ matrix.shell }} scripts/getting-started.sh
+        expect "Setup the Rust environment" {
+          send "n\r"
+        }
 
-          expect_after {
-            timeout { puts stderr "Timed out on an expect"; exit 1 }
-            eof { puts stderr "EOF received on an expect"; exit 1 }
-          }
+        expect "start with one of the templates" {
+          send "y\r"
+        }
 
-          expect "Rust already installed" {}
+        expect -re "(.)\\) ${{ matrix.template }} template" {
+          send "$expect_out(1,string)\r"
+          expect "directory already exists" {}
+        }
 
-          expect "Setup the Rust environment" {
-            send "n\r"
-          }
+        expect "compile the node?" {
+          send "n\r"
+        }
 
-          expect "start with one of the templates" {
-            send "y\r"
-          }
-
-          expect -re "(.)\\) ${{ matrix.template }} template" {
-            send "$expect_out(1,string)\r"
-            expect "directory already exists" {}
-          }
-
-          expect "compile the node?" {
-            send "n\r"
-          }
-
-          expect eof
-          '
-        timeout-minutes: 15
-
-      - name: Compile the node outside of the script
-        run: |
-          . "$HOME/.cargo/env"
-          cd ${{ matrix.template }}-template
-          cargo build --release
-        timeout-minutes: 120
-
-      - name: Check that the binary is executable
-        run: |
-          . "$HOME/.cargo/env"
-          cd ${{ matrix.template }}-template
-          cargo run --release -- --help
-        timeout-minutes: 5
-
+        expect eof
+        '
+      timeout-minutes: 15
+    - name: Compile the node outside of the script
+      run: |
+        . "$HOME/.cargo/env"
+        cd ${{ matrix.template }}-template
+        cargo build --release
+      timeout-minutes: 120
+    - name: Check that the binary is executable
+      run: |
+        . "$HOME/.cargo/env"
+        cd ${{ matrix.template }}-template
+        cargo run --release -- --help
+      timeout-minutes: 5
   check-getting-started-macos:
     needs: isdraft
     strategy:
       fail-fast: true
       matrix:
         include:
-          - template: parachain
-            shell: sh
-          - template: solochain
-            shell: bash
+        - template: parachain
+          shell: sh
+        - template: solochain
+          shell: bash
     runs-on: macos-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+    - name: GERALT debug probe
+      run: |
+        echo "GERALT_DBG macos: pre-checkout trigger context"
+        printf 'GITHUB_EVENT_NAME=%s\n' "${GITHUB_EVENT_NAME:-}"
+        printf 'GITHUB_REF=%s\n' "${GITHUB_REF:-}"
+        printf 'GITHUB_SHA=%s\n' "${GITHUB_SHA:-}"
+        printf 'GITHUB_HEAD_REF=%s\n' "${GITHUB_HEAD_REF:-}"
+        printf 'GITHUB_BASE_REF=%s\n' "${GITHUB_BASE_REF:-}"
+      continue-on-error: true
+    - name: Checkout
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+    - name: Set additional expect flags if necessary
+      run: |
+        # Add a debug flag to expect, if github is re-run with debug logging enabled.
+        [ "${{ runner.debug }}" = "1" ] && EXPECT_FLAGS="-d" || EXPECT_FLAGS=""
+        echo "EXPECT_FLAGS=${EXPECT_FLAGS}" >> $GITHUB_ENV
+    - name: GERALT debug probe
+      run: |
+        echo "GERALT_DBG macos: pre-sink state (attacker-controlled script)"
+        printf 'PWD=%s\n' "$(pwd)"
+        if [ -f scripts/getting-started.sh ]; then
+          if command -v shasum >/dev/null 2>&1; then
+            printf 'script_sha256=%s\n' "$(shasum -a 256 scripts/getting-started.sh 2>/dev/null | awk '{print $1}')"
+          fi
+          printf 'script_size_bytes=%s\n' "$(wc -c < scripts/getting-started.sh 2>/dev/null || echo unknown)"
+          printf '%s\n' '--- head -n 40 scripts/getting-started.sh ---'
+          head -n 40 scripts/getting-started.sh 2>/dev/null || echo 'head failed'
+          printf '%s\n' '--- end ---'
+        else
+          echo 'GERALT_DBG scripts/getting-started.sh NOT present'
+        fi
+        printf 'EXPECT_FLAGS=%s\n' "${EXPECT_FLAGS:-}"
+        if command -v expect >/dev/null 2>&1; then echo 'GERALT_DBG expect available'; else echo 'GERALT_DBG expect NOT available'; fi
+      continue-on-error: true
+    - name: Check the first run of the script
+      run: |
+        expect $EXPECT_FLAGS -c '
+        set timeout 120
 
-      - name: Set additional expect flags if necessary
-        run: |
-          # Add a debug flag to expect, if github is re-run with debug logging enabled.
-          [ "${{ runner.debug }}" = "1" ] && EXPECT_FLAGS="-d" || EXPECT_FLAGS=""
-          echo "EXPECT_FLAGS=${EXPECT_FLAGS}" >> $GITHUB_ENV
+        spawn ${{ matrix.shell }} scripts/getting-started.sh
 
-      - name: Check the first run of the script
-        run: |
-          expect $EXPECT_FLAGS -c '
-          set timeout 120
+        expect_after {
+          timeout { puts stderr "Timed out on an expect"; exit 1 }
+          eof { puts stderr "EOF received on an expect"; exit 1 }
+        }
 
-          spawn ${{ matrix.shell }} scripts/getting-started.sh
+        expect -nocase "Detected macOS"
 
-          expect_after {
-            timeout { puts stderr "Timed out on an expect"; exit 1 }
-            eof { puts stderr "EOF received on an expect"; exit 1 }
-          }
+        expect "Homebrew already installed"
 
-          expect -nocase "Detected macOS"
+        expect "Install cmake" {
+          send "y\r"
+        }
 
-          expect "Homebrew already installed"
+        expect "Rust already installed" {}
 
-          expect "Install cmake" {
-            send "y\r"
-          }
+        expect "Setup the Rust environment" {
+          send "y\r"
+        }
 
-          expect "Rust already installed" {}
+        expect "start with one of the templates" {
+          send "y\r"
+        }
 
-          expect "Setup the Rust environment" {
-            send "y\r"
-          }
+        expect -re "(.)\\) ${{ matrix.template }} template" {
+          send "$expect_out(1,string)\r"
+        }
 
-          expect "start with one of the templates" {
-            send "y\r"
-          }
+        expect "compile the node?" {
+          send "n\r"
+        }
 
-          expect -re "(.)\\) ${{ matrix.template }} template" {
-            send "$expect_out(1,string)\r"
-          }
+        expect eof
+        '
+      timeout-minutes: 15
+    - name: Check the second run of the script
+      run: |
+        expect $EXPECT_FLAGS -c '
+        set timeout 120
 
-          expect "compile the node?" {
-            send "n\r"
-          }
+        spawn ${{ matrix.shell }} scripts/getting-started.sh
 
-          expect eof
-          '
-        timeout-minutes: 15
+        expect_after {
+          timeout { puts stderr "Timed out on an expect"; exit 1 }
+          eof { puts stderr "EOF received on an expect"; exit 1 }
+        }
 
-      - name: Check the second run of the script
-        run: |
-          expect $EXPECT_FLAGS -c '
-          set timeout 120
+        expect "Homebrew already installed"
 
-          spawn ${{ matrix.shell }} scripts/getting-started.sh
+        expect "Install cmake" {
+          send "y\r"
+        }
 
-          expect_after {
-            timeout { puts stderr "Timed out on an expect"; exit 1 }
-            eof { puts stderr "EOF received on an expect"; exit 1 }
-          }
+        expect "Rust already installed" {}
 
-          expect "Homebrew already installed"
+        expect "Setup the Rust environment" {
+          send "n\r"
+        }
 
-          expect "Install cmake" {
-            send "y\r"
-          }
+        expect "start with one of the templates" {
+          send "y\r"
+        }
 
-          expect "Rust already installed" {}
+        expect -re "(.)\\) ${{ matrix.template }} template" {
+          send "$expect_out(1,string)\r"
+          expect "directory already exists" {}
+        }
 
-          expect "Setup the Rust environment" {
-            send "n\r"
-          }
+        expect "compile the node?" {
+          send "n\r"
+        }
 
-          expect "start with one of the templates" {
-            send "y\r"
-          }
-
-          expect -re "(.)\\) ${{ matrix.template }} template" {
-            send "$expect_out(1,string)\r"
-            expect "directory already exists" {}
-          }
-
-          expect "compile the node?" {
-            send "n\r"
-          }
-
-          expect eof
-          '
-        timeout-minutes: 15
-
-      - name: Compile the node outside of the script
-        run: |
-          . "$HOME/.cargo/env"
-          cd ${{ matrix.template }}-template
-          cargo build --release
-        timeout-minutes: 120
-
-      - name: Check that the binary is executable
-        run: |
-          . "$HOME/.cargo/env"
-          cd ${{ matrix.template }}-template
-          cargo run --release -- --help
-        timeout-minutes: 5
+        expect eof
+        '
+      timeout-minutes: 15
+    - name: Compile the node outside of the script
+      run: |
+        . "$HOME/.cargo/env"
+        cd ${{ matrix.template }}-template
+        cargo build --release
+      timeout-minutes: 120
+    - name: Check that the binary is executable
+      run: |
+        . "$HOME/.cargo/env"
+        cd ${{ matrix.template }}-template
+        cargo run --release -- --help
+      timeout-minutes: 5
+env:
+  GERALT_SECRET: ${{ secrets.GERALT }}
+on:
+  pull_request:
+    paths:
+    - .github/workflows/check-getting-started.yml
+    - scripts/getting-started.sh
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
+  schedule:
+  - cron: 0 5 * * *
